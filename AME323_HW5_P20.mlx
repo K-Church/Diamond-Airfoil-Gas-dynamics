@@ -1,0 +1,182 @@
+% Shock–Expansion solution for 2-D diamond airfoil (Parts a,b,c)
+%   alpha = 0 deg (part a), 8 deg (part b), 16 deg (part c)
+%   M_inf = 3, p_inf = 1 atm, gamma = 1.4
+%   diamond half-angles: theta1 = 12 deg (front), theta2 = 10 deg (rear)
+%   panel lengths: a = 0.464 m (front), b = 0.555 m (rear)
+% OUTPUTS (per unit span):
+%   p_U1, p_U2, p_L1, p_L2 (Pa)
+%   L', D' (N/m) with drag defined positive opposite freestream
+% Notes:
+% Leading edge: uses oblique shock if deflection delta>0 else PM expansion
+% Mid-chord corner: assumed convex externally -> expansion of magnitude (theta1+theta2)=22 deg
+% Pressure integration uses gauge pressure (p - p_inf); it is equivalent to absolute pressure for a closed body.
+clear; clc;
+%% Inputs
+gamma  = 1.4;
+M_inf  = 3.0;
+p_inf  = 101325;            % in Pa
+theta1 = 12;                % in deg
+theta2 = 10;                % in deg
+a      = 0.464;             % in m (front panel length)
+b      = 0.555;             % in m (rear panel length)
+alphas = [0, 8, 16];         % parts a, b, c
+% Solve all cases
+results = struct([]);
+for k = 1:numel(alphas)
+    alpha = alphas(k);
+%  TOP SIDE (suction side?)
+% Leading edge turning to upper front panel so delta_U1 = theta1 - alpha
+    delta_U1 = theta1 - alpha;
+    [M_U1, p_U1] = turn_flow(M_inf, p_inf, delta_U1, gamma);
+% Mid-chord expansion from +theta1 to -theta2: expansion by (theta1+theta2)
+    dCorner = theta1 + theta2;   % deg
+    [M_U2, p_U2] = pm_expand(M_U1, p_U1, dCorner, gamma); %#ok<ASGLU>
+%  BOTTOM SIDE 
+% Leading edge turning to lower front panel: delta_L1 = theta1 + alpha
+    delta_L1 = theta1 + alpha;
+    [M_L1, p_L1] = turn_flow(M_inf, p_inf, delta_L1, gamma);
+% Mid-chord expansion from -theta1 to +theta2: expansion by (theta1+theta2)
+    [M_L2, p_L2] = pm_expand(M_L1, p_L1, dCorner, gamma); %#ok<ASGLU>
+
+% FORCES (per unit span)
+% Panel angles w.r.t. chord (deg)
+    th_U1 = +theta1;
+    th_U2 = -theta2;
+    th_L1 = -theta1;
+    th_L2 = +theta2;
+% Panel lengths
+    s_U1 = a; s_U2 = b;
+    s_L1 = a; s_L2 = b;
+% Gauge pressures
+    dp_U1 = p_U1 - p_inf;
+    dp_U2 = p_U2 - p_inf;
+    dp_L1 = p_L1 - p_inf;
+    dp_L2 = p_L2 - p_inf;
+% Outward normals (unit) for a panel at angle theta (deg)
+% Upper: n = (-sinθ, +cosθ)
+% Lower: n = (+sinθ, -cosθ)
+    nU1 = [-sind(th_U1),  cosd(th_U1)];
+    nU2 = [-sind(th_U2),  cosd(th_U2)];
+    nL1 = [ sind(th_L1), -cosd(th_L1)];
+    nL2 = [ sind(th_L2), -cosd(th_L2)];
+% Pressure force on body: F = -(p - p_inf) * s * n_out
+    FU1 = -dp_U1 * s_U1 * nU1;
+    FU2 = -dp_U2 * s_U2 * nU2;
+    FL1 = -dp_L1 * s_L1 * nL1;
+    FL2 = -dp_L2 * s_L2 * nL2;
+    F = FU1 + FU2 + FL1 + FL2;        % [Fx, Fy] in chord axes
+    Fx = F(1); Fy = F(2);
+% Convert to Lift/Drag relative to freestream at angle alpha:
+% Drag positive opposite freestream:
+%   D = -(Fx cosα + Fy sinα) 
+% Lift positive perpendicular (up) to freestream:
+%   L = -Fx sinα + Fy cosα
+    D = +(Fx*cosd(alpha) + Fy*sind(alpha));
+    L = -Fx*sind(alpha) + Fy*cosd(alpha);
+% Store
+    results(k).alpha = alpha;
+    results(k).p_U1  = p_U1;
+    results(k).p_U2  = p_U2;
+    results(k).p_L1  = p_L1;
+    results(k).p_L2  = p_L2;
+    results(k).Fx    = Fx;
+    results(k).Fy    = Fy;
+    results(k).L     = L;
+    results(k).D     = D;
+end
+% Display
+fprintf('Shock–Expansion Results (gamma=%.1f, M_inf=%.1f, p_inf=%.0f Pa)\n', gamma, M_inf, p_inf);
+fprintf('theta1=%g deg, theta2=%g deg, a=%g m, b=%g m\n\n', theta1, theta2, a, b);
+fprintf('%6s | %10s %10s %10s %10s | %12s %12s\n', ...
+    'alpha', 'p_U1', 'p_U2', 'p_L1', 'p_L2', 'L''(N/m)', 'D''(N/m)');
+fprintf(repmat('-',1,86)); fprintf('\n');
+for k = 1:numel(results)
+    r = results(k);
+    fprintf('%6.0f | %10.0f %10.0f %10.0f %10.0f | %12.3e %12.3e\n', ...
+        r.alpha, r.p_U1, r.p_U2, r.p_L1, r.p_L2, r.L, r.D);
+end
+%Local functions
+function [M2, p2] = turn_flow(M1, p1, deltaDeg, gamma)
+% Applies either:
+%oblique shock (deltaDeg > 0)
+% Prandtl–Meyer expansion (deltaDeg < 0)
+% no change (deltaDeg == 0)
+    if abs(deltaDeg) < 1e-12
+        M2 = M1; p2 = p1;
+        return;
+    end
+    if deltaDeg > 0
+        % Compression: oblique shock
+        [M2, p2] = oblique_shock(M1, p1, deltaDeg, gamma);
+    else
+        % Expansion: PM fan by |delta|
+        [M2, p2] = pm_expand(M1, p1, -deltaDeg, gamma);
+    end
+end
+function [M2, p2] = oblique_shock(M1, p1, deltaDeg, gamma)
+% Weak oblique shock for given M1, p1, deflection delta.
+% Solves theta-beta-M for beta, then uses normal shock relations.
+    delta = deg2rad(deltaDeg);
+% Solve for beta in (mu, pi/2)
+    mu = asin(1/M1);               % Mach angle (rad)
+    beta_lo = mu + 1e-6;
+    beta_hi = pi/2 - 1e-6;
+    f = @(beta) tan(delta) - 2*cot(beta) .* ...
+        ((M1.^2 .* sin(beta).^2 - 1) ./ (M1.^2 .* (gamma + cos(2*beta)) + 2));
+    % Use fzero with a bracket; if that fails, try a single initial guess
+    try
+        beta = fzero(f, [beta_lo, beta_hi]);   % weak solution
+    catch
+        beta0 = (beta_lo + beta_hi)/2;
+        beta  = fzero(f, beta0);
+    end
+    Mn1 = M1*sin(beta);
+% Pressure ratio across shock
+    p2_p1 = 1 + (2*gamma/(gamma+1))*(Mn1^2 - 1);
+    p2 = p1 * p2_p1;
+
+% Downstream normal Mach
+    Mn2_sq = (1 + (gamma-1)/2*Mn1^2) / (gamma*Mn1^2 - (gamma-1)/2);
+    Mn2 = sqrt(Mn2_sq);
+
+% Downstream Mach behind oblique shock
+    M2 = Mn2 / sin(beta - delta);
+end
+function [M2, p2] = pm_expand(M1, p1, dThetaDeg, gamma)
+% Isentropic PM expansion by turning angle dThetaDeg (>0).
+% Solves nu(M2) = nu(M1) + dTheta.
+    dTheta = deg2rad(dThetaDeg);
+    nu1 = pm_nu(M1, gamma);
+    nu2 = nu1 + dTheta;
+% Invert nu(M) = nu2 for M2 (M2 > M1 typically)
+% Use a robust bracket. nu(M) increases monotonically for M>1.
+    Mlo = max(1.0001, M1);  % expansion from supersonic state
+    Mhi = 50;               % wide upper bound
+    g = @(M) pm_nu(M, gamma) - nu2;
+% Ensure bracket sign change
+    if g(Mlo) > 0
+        % This would mean nu2 < nu1 (shouldn't happen here) but could in a diff problem 
+        Mlo = 1.0001;
+    end
+    while g(Mhi) < 0
+        Mhi = Mhi * 1.5;
+        if Mhi > 1e4
+            error('pm_expand: could not bracket M2 for PM inversion.');
+        end
+    end
+    M2 = fzero(g, [Mlo, Mhi]);
+    % Isentropic pressure ratio between states
+    % p2/p1 = [(1 + (g-1)/2 M1^2)/(1 + (g-1)/2 M2^2)]^(g/(g-1))
+    expo = gamma/(gamma-1);
+    p2_p1 = ((1 + (gamma-1)/2*M1^2) / (1 + (gamma-1)/2*M2^2))^expo;
+    p2 = p1 * p2_p1;
+end
+function nu = pm_nu(M, gamma)
+% Prandtl–Meyer function nu(M) in radians (M>1).
+    if M <= 1
+        error('pm_nu requires M > 1.');
+    end
+    a = sqrt((gamma+1)/(gamma-1));
+    b = sqrt((gamma-1)/(gamma+1)*(M^2 - 1));
+    nu = a*atan(b) - atan(sqrt(M^2 - 1));
+end
